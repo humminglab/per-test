@@ -151,7 +151,7 @@ func (p *UdpPer) receiver(ctx context.Context, status chan PerState, raddr *net.
 				log.Printf("Start Remote address: %s", raddrs)
 			}
 
-			diff := time.Since(time.UnixMilli(hd.time))
+			diff := time.Since(time.Unix(hd.time/1000, (hd.time%1000)*1000000))
 			if hd.txSeq != 0 {
 				if last < hd.txSeq {
 					if last+1 != hd.txSeq {
