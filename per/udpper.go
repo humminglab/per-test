@@ -172,6 +172,29 @@ func (p *UdpPer) receiver(ctx context.Context, status chan PerState, raddr *net.
 	}
 }
 
+func dumpLossPacket(bitmap *roaring.Bitmap, report *PerReport) {
+	lost := make([]uint32, 0, 100)
+	for i := uint32(1); i < uint32(bitmap.GetCardinality()); i++ {
+		if !bitmap.Contains(i) {
+			lost = append(lost, i)
+		}
+	}
+
+	log.Printf("Rx Lost packets: %d\n", len(lost))
+	if len(lost) != 0 {
+		log.Printf("Detail:\n")
+		for _, seq := range lost {
+			log.Printf("%d ", seq)
+		}
+	}
+	log.Println()
+	log.Println("############################################################################################")
+	log.Printf("TX: Total %d, Lost %d, Lost Rate %.2f%%\n", report.TxTotal, report.TxTotal-report.TxValid, float64(report.TxTotal-report.TxValid)/float64(report.TxTotal)*100)
+	log.Printf("RX: Total %d, Lost %d, Lost Rate %.2f%%\n", report.RxTotal, report.RxTotal-report.RxValid, float64(report.RxTotal-report.RxValid)/float64(report.RxTotal)*100)
+
+	log.Println(report)
+}
+
 func (p *UdpPer) Run(ctx context.Context) (PerReport, error) {
 	var s PerState
 	var raddr *net.UDPAddr
@@ -261,7 +284,12 @@ func (p *UdpPer) Run(ctx context.Context) (PerReport, error) {
 				log.Println("Rx Finished")
 			}
 		case <-timer.C:
+			// 이 시점에서 종료를 하지 않으면 defer로 수행하게 되면 close와 섞여서 계속 connection 에러가 발생한다.
+			rxCancel()
+			txCancel()
+
 			report.RxTotal = p.Count
+			dumpLossPacket(&bitmap, &report)
 			return report, nil
 		}
 
@@ -274,9 +302,6 @@ func (p *UdpPer) Run(ctx context.Context) (PerReport, error) {
 			}
 
 			if finish_tx && finish_rx {
-				// 이 시점에서 종료를 하지 않으면 defer로 수행하게 되면 close와 섞여서 계속 connection 에러가 발생한다.
-				rxCancel()
-				txCancel()
 				if report.RxTotal == p.Count {
 					// 모두 받은 경우
 					timer.Reset(time.Millisecond)

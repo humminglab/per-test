@@ -2,7 +2,6 @@ package per
 
 import (
 	"context"
-	"log"
 	"net"
 	"testing"
 
@@ -35,7 +34,7 @@ func TestUdpResolve(t *testing.T) {
 
 func TestUdpRun(t *testing.T) {
 	count := uint32(10)
-	interval := 1
+	interval := 10
 
 	nonce := Nonce{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10}
 	n := New("localhost", 5201, 5201, count, interval, 100, &nonce)
@@ -43,8 +42,8 @@ func TestUdpRun(t *testing.T) {
 	ctx := context.Background()
 	s, err := n.Run(ctx)
 
-	log.Printf("%+v", s)
 	assert.NoError(t, err, "Run() should not return error")
-	assert.EqualValues(t, s.TxSeq, count, "Invalid TxSeq")
-
+	assert.Equal(t, s.TxTotal, s.RxTotal, "TxTotal and RxTotal should be equal")
+	assert.Equal(t, s.TxTotal, s.TxValid, "TxTotal and TxValid should be equal")
+	assert.Equal(t, s.RxTotal, s.RxValid, "RxTotal and RxValid should be equal")
 }
