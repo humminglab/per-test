@@ -113,36 +113,36 @@ func (p *UdpPer) receiver(ctx context.Context, status chan PerState, raddr *net.
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
-			err := conn.SetReadDeadline(time.Now().Add(time.Millisecond * 1000))
+			err := conn.SetReadDeadline(time.Now().Add(time.Millisecond * 100))
 			if err != nil {
 				panic(err)
 			}
 			n, addr, err := conn.ReadFromUDP(payload)
 			if err != nil {
 				if neterr, ok := err.(net.Error); ok && neterr.Timeout() {
-					continue
+					break
 				}
 				return err
 			}
 			if n < len(payload) || addr == nil {
 				// skip bad size packet
 				log.Printf("Bad packet size %d from %s", n, addr.String())
-				continue
+				break
 			}
 			if raddr != nil && addr.String() != raddrs {
 				log.Printf("Unexpected remote address: %s", addr.String())
-				continue
+				break
 			}
 
 			hd := (*Header)(unsafe.Pointer(&payload[0]))
 			if hd.header != hdPrefix {
 				log.Printf("Bad packet header %x from %s", hd.header, addr.String())
-				continue
+				break
 			}
 
 			if hd.nonce != p.Nonce {
 				log.Printf("Unexpected nonce from address: %s", addr.String())
-				continue
+				break
 			}
 
 			if raddr == nil {
@@ -180,6 +180,7 @@ func (p *UdpPer) Run(ctx context.Context) (PerReport, error) {
 	finish_tx := false
 	finish_rx := false
 	updated := false
+	timerSet := false
 
 	if len(p.Remote) > 0 {
 		raddr, _ = net.ResolveUDPAddr("udp", p.Remote+":"+strconv.Itoa(p.Port))
@@ -254,14 +255,10 @@ func (p *UdpPer) Run(ctx context.Context) (PerReport, error) {
 			report.RxTotal = remote.RxSeq
 			report.TxValid = remote.RxRecv
 
-			if s.TxSeq == 0 || s.TxSeq == p.Count {
+			if !finish_rx && (s.TxSeq == 0 || s.TxSeq == p.Count) {
 				finish_rx = true
 				updated = true
 				log.Println("Rx Finished")
-			}
-			if s.RxSeq == p.Count {
-				timer.Stop()
-				timer.Reset(time.Second)
 			}
 		case <-timer.C:
 			report.RxTotal = p.Count
@@ -269,16 +266,29 @@ func (p *UdpPer) Run(ctx context.Context) (PerReport, error) {
 		}
 
 		if updated {
-			timer.Stop()
+			if timerSet {
+				if !timer.Stop() {
+					<-timer.C
+				}
+				timerSet = false
+			}
+
 			if finish_tx && finish_rx {
+				// 이 시점에서 종료를 하지 않으면 defer로 수행하게 되면 close와 섞여서 계속 connection 에러가 발생한다.
+				rxCancel()
+				txCancel()
 				if report.RxTotal == p.Count {
-					timer.Reset(time.Microsecond)
+					// 모두 받은 경우
+					timer.Reset(time.Millisecond)
 				} else {
+					// 마지막은 받았지만 loss 가 있는 경우
 					timer.Reset(time.Second)
 				}
 			} else if finish_tx {
+				// TX는 끝났지만 RX가 모두 받지 못한 경우
 				timer.Reset(time.Second * 10)
 			}
+			timerSet = true
 			updated = false
 		}
 	}
