@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"time"
 	"unsafe"
+
+	"github.com/RoaringBitmap/roaring"
 )
 
 var hdPrefix uint32 = 0xdeadbeef
@@ -23,7 +25,7 @@ type Header struct {
 	nonce  Nonce
 }
 
-type PerStatus struct {
+type PerState struct {
 	Time   int64
 	TxSeq  uint32
 	RxSeq  uint32
@@ -41,12 +43,20 @@ type UdpPer struct {
 	Length    int
 }
 
+type PerReport struct {
+	TxTotal uint32
+	TxValid uint32
+	RxTotal uint32
+	RxValid uint32
+}
+
 // PER Transmitter
 //
 // - status.RAddr 로 전송, 단, resolve 가 만족된 이후 전송 시작
-func (p *UdpPer) sender(ctx context.Context, report chan uint32, conn *net.UDPConn, status *PerStatus) error {
+func (p *UdpPer) sender(ctx context.Context, status chan uint32, conn *net.UDPConn, last *PerState) error {
 	var count uint32 = 0
 	var ticker *time.Ticker
+	finish := false
 
 	payload := make([]byte, p.Length)
 	hd := (*Header)(unsafe.Pointer(&payload[0]))
@@ -60,20 +70,26 @@ func (p *UdpPer) sender(ctx context.Context, report chan uint32, conn *net.UDPCo
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			count++
+			if finish {
+				hd.txSeq = 0
+			} else {
+				count++
+				hd.txSeq = count
+			}
 			hd.time = time.Now().UnixMilli()
-			hd.txSeq = count
-			hd.rxSeq = status.RxSeq
-			hd.rxRecv = status.RxRecv
+			hd.rxSeq = last.RxSeq
+			hd.rxRecv = last.RxRecv
 
-			_, err := conn.WriteToUDP(payload, &status.RAddr)
+			_, err := conn.WriteToUDP(payload, &last.RAddr)
 			if err != nil {
 				log.Printf("Fail to send #%d packets", count)
 				log.Printf("%s", err)
 			}
-			report <- count
+			if !finish {
+				status <- count
+			}
 			if count >= p.Count {
-				return nil
+				finish = true
 			}
 		}
 	}
@@ -83,7 +99,8 @@ func (p *UdpPer) sender(ctx context.Context, report chan uint32, conn *net.UDPCo
 //
 // - raddr 이 nil인 경우, nonce가 맞는 패킷이 오면 raddr를 자동 설정
 // - raddr 이 nil이 아닌 경우, raddr로 부터 오는 메시지만 허용
-func (p *UdpPer) receiver(ctx context.Context, report chan PerStatus, raddr *net.UDPAddr, conn *net.UDPConn) error {
+func (p *UdpPer) receiver(ctx context.Context, status chan PerState, raddr *net.UDPAddr, conn *net.UDPConn) error {
+	var last uint32
 	payload := make([]byte, p.Length)
 
 	var raddrs string
@@ -101,7 +118,6 @@ func (p *UdpPer) receiver(ctx context.Context, report chan PerStatus, raddr *net
 				panic(err)
 			}
 			n, addr, err := conn.ReadFromUDP(payload)
-			log.Printf("### result: %d bytes from %s, %s\n", n, addr, err)
 			if err != nil {
 				if neterr, ok := err.(net.Error); ok && neterr.Timeout() {
 					continue
@@ -135,7 +151,17 @@ func (p *UdpPer) receiver(ctx context.Context, report chan PerStatus, raddr *net
 				log.Printf("Start Remote address: %s", raddrs)
 			}
 
-			report <- PerStatus{
+			diff := time.Since(time.UnixMilli(hd.time))
+			if hd.txSeq != 0 {
+				if last < hd.txSeq {
+					if last+1 != hd.txSeq {
+						log.Printf("RX: Lost packet #%d !!!", hd.txSeq-1)
+					}
+					last = hd.txSeq
+				}
+				log.Printf("RX: Seq=%d, Len=%d, Delay=%s\n", hd.rxSeq, n, diff)
+			}
+			status <- PerState{
 				Time:   hd.time,
 				TxSeq:  hd.txSeq,
 				RxSeq:  hd.rxSeq,
@@ -146,11 +172,14 @@ func (p *UdpPer) receiver(ctx context.Context, report chan PerStatus, raddr *net
 	}
 }
 
-func (p *UdpPer) Run(ctx context.Context) (PerStatus, error) {
-	var s PerStatus
+func (p *UdpPer) Run(ctx context.Context) (PerReport, error) {
+	var s PerState
 	var raddr *net.UDPAddr
-	tx_finished := false
-	rx_finished := false
+	var bitmap roaring.Bitmap
+	report := PerReport{}
+	finish_tx := false
+	finish_rx := false
+	updated := false
 
 	if len(p.Remote) > 0 {
 		raddr, _ = net.ResolveUDPAddr("udp", p.Remote+":"+strconv.Itoa(p.Port))
@@ -160,69 +189,98 @@ func (p *UdpPer) Run(ctx context.Context) (PerStatus, error) {
 	laddr := net.UDPAddr{Port: p.LocalPort}
 	conn, err := net.ListenUDP("udp", &laddr)
 	if err != nil {
-		return s, err
+		return report, err
 	}
 	defer conn.Close()
 
 	tx := make(chan uint32)
 	txErr := make(chan error)
-	rx := make(chan PerStatus)
+	rx := make(chan PerState)
 	rxErr := make(chan error)
 
 	rctx, rxCancel := context.WithCancel(ctx)
+	tctx, txCancel := context.WithCancel(ctx)
+	defer txCancel()
+	defer rxCancel()
 
 	go func() {
 		err := p.receiver(rctx, rx, raddr, conn)
 		rxErr <- err
 	}()
 
-	txFunc := func() {
-		err = p.sender(ctx, tx, conn, &s)
-		txErr <- err
-	}
-
-	if raddr != nil {
+	txStart := func() {
 		go func() {
-			txFunc()
+			err = p.sender(tctx, tx, conn, &s)
+			txErr <- err
 		}()
 	}
 
+	if raddr != nil {
+		txStart()
+	}
+
 	timer := time.NewTimer(time.Hour * 24 * 365)
+	timer.Stop()
 
 	for {
 		select {
-		case c := <-tx:
-			s.TxSeq = c
+		case tSeq := <-tx:
+			s.TxSeq = tSeq
+			report.TxTotal = tSeq
+			if tSeq == p.Count {
+				finish_tx = true
+				updated = true
+				log.Println("Tx Finished")
+			}
 		case <-txErr:
-			tx_finished = true
-			timer.Reset(time.Second * 10)
-			log.Println("Tx Finished")
+			log.Println("Tx ended")
 		case <-rxErr:
-			rx_finished = true
 			log.Println("Rx ended")
-		case r := <-rx:
-			s.Time = r.Time
-			s.RxSeq = r.TxSeq
-
+		case remote := <-rx:
 			if raddr == nil {
-				s.RAddr = r.RAddr
+				s.RAddr = remote.RAddr
 				raddr = &s.RAddr
-				go txFunc()
+				txStart()
 			}
 
+			s.Time = remote.Time
+			if remote.TxSeq != 0 {
+				if bitmap.CheckedAdd(remote.TxSeq) {
+					report.RxValid++
+				}
+				s.RxSeq = remote.TxSeq
+			}
+			s.RxRecv = report.RxValid
+			report.RxTotal = remote.RxSeq
+			report.TxValid = remote.RxRecv
+
+			if s.TxSeq == 0 || s.TxSeq == p.Count {
+				finish_rx = true
+				updated = true
+				log.Println("Rx Finished")
+			}
 			if s.RxSeq == p.Count {
-				rxCancel()
+				timer.Stop()
+				timer.Reset(time.Second)
 			}
-
 		case <-timer.C:
-			rxCancel()
+			report.RxTotal = p.Count
+			return report, nil
 		}
 
-		if tx_finished && rx_finished {
-			defer rxCancel()
-			return s, nil
+		if updated {
+			timer.Stop()
+			if finish_tx && finish_rx {
+				if report.RxTotal == p.Count {
+					timer.Reset(time.Microsecond)
+				} else {
+					timer.Reset(time.Second)
+				}
+			} else if finish_tx {
+				timer.Reset(time.Second * 10)
+			}
+			updated = false
 		}
-
 	}
 }
 
