@@ -76,7 +76,7 @@ func (p *UdpPer) sender(ctx context.Context, status chan uint32, conn *net.UDPCo
 				count++
 				hd.txSeq = count
 			}
-			hd.time = time.Now().UnixMilli()
+			hd.time = time.Now().UnixNano() / 1000000
 			hd.rxSeq = last.RxSeq
 			hd.rxRecv = last.RxRecv
 
