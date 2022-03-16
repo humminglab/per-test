@@ -3,6 +3,7 @@ package per
 import (
 	"context"
 	"crypto/rand"
+	"fmt"
 	"log"
 	"net"
 	"strconv"
@@ -190,25 +191,25 @@ func (p *UdpPer) receiver(ctx context.Context, status chan PerState, raddr *net.
 	}
 }
 
-func dumpLossPacket(bitmap *roaring.Bitmap, report *PerReport) {
+func dumpLossPacket(total uint32, bitmap *roaring.Bitmap, report *PerReport) {
 	lost := make([]uint32, 0, 100)
-	for i := uint32(1); i < uint32(bitmap.GetCardinality()); i++ {
+	for i := uint32(1); i < total; i++ {
 		if !bitmap.Contains(i) {
 			lost = append(lost, i)
 		}
 	}
 
-	log.Printf("Rx Lost packets: %d\n", len(lost))
+	fmt.Printf("Rx Lost packets: %d\n", len(lost))
 	if len(lost) != 0 {
-		log.Printf("Detail:\n")
+		fmt.Printf("Detail:\n")
 		for _, seq := range lost {
-			log.Printf("%d ", seq)
+			fmt.Printf("%d ", seq)
 		}
 	}
-	log.Println()
-	log.Println("############################################################################################")
-	log.Printf("TX: Total %d, Lost %d, Lost Rate %.2f%%\n", report.TxTotal, report.TxTotal-report.TxValid, float64(report.TxTotal-report.TxValid)/float64(report.TxTotal)*100)
-	log.Printf("RX: Total %d, Lost %d, Lost Rate %.2f%%\n", report.RxTotal, report.RxTotal-report.RxValid, float64(report.RxTotal-report.RxValid)/float64(report.RxTotal)*100)
+	fmt.Println()
+	fmt.Println("############################################################################################")
+	fmt.Printf("TX: Total %d, Lost %d, Lost Rate %.2f%%\n", report.TxTotal, report.TxTotal-report.TxValid, float64(report.TxTotal-report.TxValid)/float64(report.TxTotal)*100)
+	fmt.Printf("RX: Total %d, Lost %d, Lost Rate %.2f%%\n", report.RxTotal, report.RxTotal-report.RxValid, float64(report.RxTotal-report.RxValid)/float64(report.RxTotal)*100)
 }
 
 func (p *UdpPer) Run(ctx context.Context) (PerReport, error) {
@@ -305,7 +306,7 @@ func (p *UdpPer) Run(ctx context.Context) (PerReport, error) {
 			txCancel()
 
 			report.RxTotal = p.Count
-			dumpLossPacket(&bitmap, &report)
+			dumpLossPacket(p.Count, &bitmap, &report)
 			return report, nil
 		}
 
