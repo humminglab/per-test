@@ -17,12 +17,15 @@ var hdPrefix uint32 = 0xdeadbeef
 type Nonce [16]byte
 
 type Header struct {
-	header uint32
-	txSeq  uint32
-	rxSeq  uint32
-	rxRecv uint32
-	time   int64
-	nonce  Nonce
+	header   uint32
+	txSeq    uint32
+	rxSeq    uint32
+	rxRecv   uint32
+	time     int64
+	interval int32
+	length   int32
+	total    int32
+	nonce    Nonce
 }
 
 type PerState struct {
@@ -62,6 +65,9 @@ func (p *UdpPer) sender(ctx context.Context, status chan uint32, conn *net.UDPCo
 	hd := (*Header)(unsafe.Pointer(&payload[0]))
 	hd.header = hdPrefix
 	hd.nonce = p.Nonce
+	hd.interval = int32(p.Interval)
+	hd.length = int32(p.Length)
+	hd.total = int32(p.Count)
 
 	ticker = time.NewTicker(time.Duration(p.Interval) * time.Millisecond)
 	defer ticker.Stop()
@@ -145,10 +151,12 @@ func (p *UdpPer) receiver(ctx context.Context, status chan PerState, raddr *net.
 				break
 			}
 
+			updateRaddr := false
 			if raddr == nil {
 				raddr = addr
 				raddrs = raddr.String()
 				log.Printf("Start Remote address: %s", raddrs)
+				updateRaddr = true
 			}
 
 			diff := time.Since(time.Unix(hd.time/1000, (hd.time%1000)*1000000))
@@ -167,6 +175,14 @@ func (p *UdpPer) receiver(ctx context.Context, status chan PerState, raddr *net.
 				RxSeq:  hd.rxSeq,
 				RxRecv: hd.rxRecv,
 				RAddr:  *addr,
+			}
+
+			if updateRaddr {
+				p.Interval = int(hd.interval)
+				p.Length = int(hd.length)
+				p.Count = uint32(hd.total)
+				log.Printf("Change Parameter: Interval: %d, Length: %d, Count: %d", p.Interval, p.Length, p.Count)
+				payload = make([]byte, p.Length)
 			}
 		}
 	}
@@ -191,8 +207,6 @@ func dumpLossPacket(bitmap *roaring.Bitmap, report *PerReport) {
 	log.Println("############################################################################################")
 	log.Printf("TX: Total %d, Lost %d, Lost Rate %.2f%%\n", report.TxTotal, report.TxTotal-report.TxValid, float64(report.TxTotal-report.TxValid)/float64(report.TxTotal)*100)
 	log.Printf("RX: Total %d, Lost %d, Lost Rate %.2f%%\n", report.RxTotal, report.RxTotal-report.RxValid, float64(report.RxTotal-report.RxValid)/float64(report.RxTotal)*100)
-
-	log.Println(report)
 }
 
 func (p *UdpPer) Run(ctx context.Context) (PerReport, error) {
