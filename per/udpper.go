@@ -173,7 +173,7 @@ func (p *UdpPer) receiver(ctx context.Context, status chan PerState, raddr *net.
 					}
 					last = hd.txSeq
 				}
-				log.Printf("RX: Seq=%d, Len=%d, Delay=%s\n", hd.rxSeq, n, diff)
+				log.Printf("RX: Seq=%d, Len=%d, Timestamp=%d (%s)\n", hd.txSeq, n, hd.time, diff)
 			}
 			status <- PerState{
 				Time:   hd.time,
