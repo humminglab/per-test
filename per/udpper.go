@@ -263,6 +263,7 @@ func (p *UdpPer) Run(ctx context.Context) (PerReport, error) {
 	timer := time.NewTimer(time.Hour * 24 * 365)
 	timer.Stop()
 
+	s.TxSeq = 1
 	for {
 		select {
 		case tSeq := <-tx:
