@@ -223,7 +223,7 @@ func (p *UdpPer) Run(ctx context.Context) (PerReport, error) {
 	timerSet := false
 
 	if len(p.Remote) > 0 {
-		raddr, _ = net.ResolveUDPAddr("udp", p.Remote+":"+strconv.Itoa(p.Port))
+		raddr, _ = net.ResolveUDPAddr("udp", "["+p.Remote+"]"+":"+strconv.Itoa(p.Port))
 		s.RAddr = *raddr
 	}
 
