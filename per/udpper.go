@@ -107,7 +107,7 @@ func (p *UdpPer) sender(ctx context.Context, status chan uint32, conn *net.UDPCo
 // - raddr 이 nil이 아닌 경우, raddr로 부터 오는 메시지만 허용
 func (p *UdpPer) receiver(ctx context.Context, status chan PerState, raddr *net.UDPAddr, conn *net.UDPConn) error {
 	var last uint32
-	payload := make([]byte, p.Length)
+	payload := make([]byte, p.Length+10000)
 
 	var raddrs string
 	if raddr != nil {
@@ -130,11 +130,6 @@ func (p *UdpPer) receiver(ctx context.Context, status chan PerState, raddr *net.
 				}
 				return err
 			}
-			if n < len(payload) || addr == nil {
-				// skip bad size packet
-				log.Printf("Bad packet size %d from %s", n, addr.String())
-				break
-			}
 			if raddr != nil && addr.String() != raddrs {
 				log.Printf("Unexpected remote address: %s", addr.String())
 				break
@@ -156,7 +151,18 @@ func (p *UdpPer) receiver(ctx context.Context, status chan PerState, raddr *net.
 				raddr = addr
 				raddrs = raddr.String()
 				log.Printf("Start Remote address: %s", raddrs)
+
+				p.Interval = int(hd.interval)
+				p.Length = int(hd.length)
+				p.Count = uint32(hd.total)
+				log.Printf("Change Parameter: Interval: %d, Length: %d, Count: %d", p.Interval, p.Length, p.Count)
 				updateRaddr = true
+			}
+
+			if n < p.Length || addr == nil {
+				// skip bad size packet
+				log.Printf("Bad packet size %d from %s", n, addr.String())
+				break
 			}
 
 			diff := time.Since(time.Unix(hd.time/1000, (hd.time%1000)*1000000))
@@ -178,10 +184,6 @@ func (p *UdpPer) receiver(ctx context.Context, status chan PerState, raddr *net.
 			}
 
 			if updateRaddr {
-				p.Interval = int(hd.interval)
-				p.Length = int(hd.length)
-				p.Count = uint32(hd.total)
-				log.Printf("Change Parameter: Interval: %d, Length: %d, Count: %d", p.Interval, p.Length, p.Count)
 				payload = make([]byte, p.Length)
 			}
 		}
@@ -270,10 +272,10 @@ func (p *UdpPer) Run(ctx context.Context) (PerReport, error) {
 				updated = true
 				log.Println("Tx Finished")
 			}
-		case <-txErr:
-			log.Println("Tx ended")
-		case <-rxErr:
-			log.Println("Rx ended")
+		case e := <-txErr:
+			log.Printf("Tx ended: %s\n", e)
+		case e := <-rxErr:
+			log.Printf("Rx ended: %s\n", e)
 		case remote := <-rx:
 			if raddr == nil {
 				s.RAddr = remote.RAddr
