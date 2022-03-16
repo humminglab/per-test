@@ -319,15 +319,17 @@ func (p *UdpPer) Run(ctx context.Context) (PerReport, error) {
 				if report.RxTotal == p.Count {
 					// 모두 받은 경우
 					timer.Reset(time.Millisecond)
+					timerSet = true
 				} else {
 					// 마지막은 받았지만 loss 가 있는 경우
 					timer.Reset(time.Second)
+					timerSet = true
 				}
 			} else if finish_tx {
 				// TX는 끝났지만 RX가 모두 받지 못한 경우
 				timer.Reset(time.Second * 10)
+				timerSet = true
 			}
-			timerSet = true
 			updated = false
 		}
 	}
